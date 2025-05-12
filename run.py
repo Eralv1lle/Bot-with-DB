@@ -2,6 +2,7 @@ from aiogram import Bot, Dispatcher
 import asyncio
 from os import getenv
 from dotenv import load_dotenv
+import logging
 
 from app.handlers import router
 
@@ -18,5 +19,6 @@ async def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     try: asyncio.run(main())
     except KeyboardInterrupt: print('stop')

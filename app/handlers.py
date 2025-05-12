@@ -1,12 +1,12 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
 import sqlite3
 
-from app.keyboard import create_markup
+from app.keyboard import edit_kb, in_db, not_in_db
 
 
 router = Router()
@@ -14,6 +14,10 @@ router = Router()
 class Registration(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
+
+class EditInfo(StatesGroup):
+    editing_login = State()
+    editing_password = State()
 
 
 @router.message(CommandStart())
@@ -27,9 +31,9 @@ async def start_message(message: Message):
     password TEXT NOT NULL)""")
     cr.execute(f"""SELECT * FROM Users WHERE id = {message.from_user.id}""")
     if cr.fetchall():
-        await message.answer('Вы уже есть в БД. Можете удалить или изменить данные', reply_markup=create_markup(['Удалить аккаунт', 'Изменить данные']))
+        await message.answer('Вы уже есть в БД. Можете удалить или изменить данные', reply_markup=in_db)
     else:
-        await message.answer('Приветствую. Здесь вы можете зарегистрироваться в БД', reply_markup=create_markup(['Зарегистрироваться в БД']))
+        await message.answer('Приветствую. Здесь вы можете зарегистрироваться в БД', reply_markup=not_in_db)
 
     con.commit()
     con.close()
@@ -37,8 +41,14 @@ async def start_message(message: Message):
 
 @router.message(F.text == 'Зарегистрироваться в БД')
 async def start_reg(message: Message, state: FSMContext):
-    await message.answer('Отлично! Пожалуйста введите ваш логин: ')
-    await state.set_state(Registration.waiting_for_login)
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+    cr.execute(f"SELECT * FROM Users WHERE id = '{message.from_user.id}'")
+    if cr.fetchall():
+        await message.answer('Вы уже зарегистрированы')
+    else:
+        await message.answer('Отлично! Пожалуйста введите ваш логин: ')
+        await state.set_state(Registration.waiting_for_login)
 
 
 @router.message(Registration.waiting_for_login)
@@ -62,12 +72,98 @@ async def get_password(message: Message, state: FSMContext):
     await state.update_data(password=message.text)
     data = await state.get_data()
     con = sqlite3.connect('data.db')
-
     cr = con.cursor()
+
     cr.execute(f"INSERT INTO Users VALUES ({int(message.from_user.id)}, '{data['login']}', '{data['password']}')")
 
     con.commit()
     con.close()
 
-    await message.answer('Отлично! Регистрация завершена')
+    await message.answer('Отлично! Регистрация завершена', reply_markup=in_db)
     await state.clear()
+
+
+@router.message(F.text == 'Удалить аккаунт')
+async def del_acc(message: Message):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f'SELECT *  FROM Users WHERE id = {int(message.from_user.id)}')
+
+    if cr.fetchall():
+        cr.execute(f'DELETE FROM Users WHERE id = {int(message.from_user.id)}')
+        con.commit()
+        con.close()
+        await message.answer('Аккаунт удалён')
+    else:
+        await message.answer('Вы не зарегистрированы')
+
+
+@router.message(F.text == 'Изменить данные')
+async def edit_acc(message: Message):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f'SELECT * FROM Users WHERE id = {message.from_user.id}')
+    if not cr.fetchall():
+        await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
+    else:
+        await message.answer('Отлично! Выберите, что хотите изменить:', reply_markup=edit_kb)
+
+
+@router.callback_query(F.data == 'editlogin')
+async def change_login(callback: CallbackQuery, state: FSMContext):
+    await callback.answer('Вы выбрали изменить логин ✅')
+    await callback.message.answer('Введите новый логин:')
+    await state.set_state(EditInfo.editing_login)
+
+
+@router.callback_query(F.data == 'editpassword')
+async def change_password(callback: CallbackQuery, state: FSMContext):
+    await callback.answer('Вы выбрали изменить пароль ✅')
+    await state.set_state(EditInfo.editing_password)
+
+
+@router.message(EditInfo.editing_login)
+async def edit_login(message: Message, state: FSMContext):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f"SELECT login FROM Users WHERE id = {message.from_user.id}")
+
+    if cr.fetchall()[0][0] == message.text:
+        await message.answer('Вы ввели свой же логин, пожалуйста введите другой')
+    else:
+        cr.execute(f"SELECT * FROM Users WHERE login = '{message.text}'")
+        if cr.fetchall():
+            await message.answer('Такой пользователь уже существует. Пожалуйста, введите другой логин:')
+        else:
+            cr.execute(f"UPDATE Users SET login = '{message.text}' WHERE id = {int(message.from_user.id)}")
+            await state.clear()
+            await message.answer(f'Логин изменён ✅\nНовый логин: {message.text}')
+
+    con.commit()
+    con.close()
+
+
+@router.message(Command('all'), F.from_user.id == 1999317423)
+async def list_of_users(message: Message):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute('SELECT * FROM Users')
+    users = ''
+
+    for i, info in enumerate(cr.fetchall(), start=1):
+        user_id, login, password = info
+        users += f'{i}. id = {user_id}, {login} - {password}\n'
+
+    await message.answer(users)
+
+    con.commit()
+    con.close()
+
+
+@router.message()
+async def ya_blat_ne_ponimau(message: Message):
+    await message.answer('Извини, я тебя не понимаю')
