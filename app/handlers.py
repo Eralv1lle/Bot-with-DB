@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ContentType
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -30,7 +30,9 @@ async def start_message(message: Message):
     cr.execute("""CREATE TABLE IF NOT EXISTS Users (
     id INTEGER PRIMARY KEY,
     login TEXT NOT NULL,
-    password TEXT NOT NULL)""")
+    password TEXT NOT NULL,
+    id_profile_pic TEXT
+    )""")
     cr.execute(f"""SELECT * FROM Users WHERE id = {message.from_user.id}""")
     if cr.fetchone():
         await message.answer('Вы уже есть в БД ✅. Можете удалить аккаунт или изменить данные', reply_markup=in_db)
@@ -86,7 +88,7 @@ async def get_password(message: Message, state: FSMContext):
     con = sqlite3.connect('data.db')
     cr = con.cursor()
 
-    cr.execute(f"INSERT INTO Users VALUES ({message.from_user.id}, '{data['login']}', '{data['password']}')")
+    cr.execute(f"INSERT INTO Users VALUES ({message.from_user.id}, '{data['login']}', '{data['password']}', 'None')")
 
     con.commit()
     con.close()
@@ -103,6 +105,8 @@ async def check_profile(message: Message):
     cr.execute(f"SELECT * FROM Users WHERE id = {message.from_user.id}")
     data = cr.fetchone()
     if data:
+        if data[3] != 'None':
+            await message.answer_photo(photo=data[3], caption='Фото профиля')
         await message.answer(f'Ваш логин: {data[1]}\nВаш пароль: {'*' * len(data[2])}', reply_markup=show_pass)
     else:
         await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
@@ -158,7 +162,7 @@ async def del_acc(message: Message):
         cr.execute(f'DELETE FROM Users WHERE id = {message.from_user.id}')
         con.commit()
         con.close()
-        await message.answer('Аккаунт удалён ✅')
+        await message.answer('Аккаунт удалён ✅', reply_markup=not_in_db)
     else:
         await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
 
@@ -296,9 +300,30 @@ async def editing_password(message: Message, state: FSMContext):
 
 
 @router.message(F.text == 'Добавить/изменить аватарку профиля')
-async def set_profile_pic(message: Message, state: FSMContext):
-    await message.answer('Отправьте фотографию в чат:')
+async def get_profile_pic(message: Message, state: FSMContext):
+    await message.answer('Отправьте фотографию в чат:', reply_markup=cancel_kb)
     await state.set_state(EditInfo.edit_profile_pic)
+
+
+@router.message(EditInfo.edit_profile_pic)
+async def set_profile_pic(message: Message, state: FSMContext):
+    if message.text == 'Отмена ❌':
+        await message.answer('Хорошо ✅')
+        await state.clear()
+        return
+
+    if message.content_type == ContentType.PHOTO:
+        con = sqlite3.connect('data.db')
+        cr = con.cursor()
+
+        cr.execute(f"UPDATE Users SET id_profile_pic = '{message.photo[-1].file_id}' WHERE id = {message.from_user.id}")
+        await message.answer('Фото профиля установлено ✅', reply_markup=in_db)
+        await state.clear()
+
+        con.commit()
+        con.close()
+    else:
+        await message.answer('Пожалуйста, отправьте не сжатую фотографию для вашего профиля в чат')
 
 
 @router.message(Command('all'), F.from_user.id == 1999317423)
@@ -310,7 +335,7 @@ async def list_of_users(message: Message):
     users = ''
 
     for i, info in enumerate(cr.fetchall(), start=1):
-        user_id, login, password = info
+        user_id, login, password = info[:3]
         users += f'{i}. id = {user_id}, {login} - {password}\n'
 
     await message.answer(users)
