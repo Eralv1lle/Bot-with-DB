@@ -5,8 +5,9 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
 import sqlite3
+from pprint import pprint
 
-from app.keyboard import edit_kb, in_db, not_in_db
+from app.keyboard import edit_kb, in_db, not_in_db, show_pass, hide_pass
 
 
 router = Router()
@@ -31,7 +32,7 @@ async def start_message(message: Message):
     password TEXT NOT NULL)""")
     cr.execute(f"""SELECT * FROM Users WHERE id = {message.from_user.id}""")
     if cr.fetchall():
-        await message.answer('Вы уже есть в БД. Можете удалить или изменить данные', reply_markup=in_db)
+        await message.answer('Вы уже есть в БД ✅. Можете удалить или изменить данные', reply_markup=in_db)
     else:
         await message.answer('Приветствую. Здесь вы можете зарегистрироваться в БД', reply_markup=not_in_db)
 
@@ -45,7 +46,7 @@ async def start_reg(message: Message, state: FSMContext):
     cr = con.cursor()
     cr.execute(f"SELECT * FROM Users WHERE id = '{message.from_user.id}'")
     if cr.fetchall():
-        await message.answer('Вы уже зарегистрированы')
+        await message.answer('Вы уже зарегистрированы ✅')
     else:
         await message.answer('Отлично! Пожалуйста введите ваш логин: ')
         await state.set_state(Registration.waiting_for_login)
@@ -79,8 +80,59 @@ async def get_password(message: Message, state: FSMContext):
     con.commit()
     con.close()
 
-    await message.answer('Отлично! Регистрация завершена', reply_markup=in_db)
+    await message.answer(f'Отлично! Регистрация завершена ✅\n\nВаш логин {data['login']}\nВаш пароль: {data['password']}', reply_markup=in_db)
     await state.clear()
+
+
+@router.message(F.text == 'Мой профиль')
+async def check_profile(message: Message):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f"SELECT * FROM Users WHERE id = {message.from_user.id}")
+    data = cr.fetchall()
+    if data:
+        await message.answer(f'Ваш логин: {data[0][1]}\nВаш пароль: {'*' * len(data[0][2])}', reply_markup=show_pass)
+    else:
+        await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
+
+    con.commit()
+    cr.close()
+
+@router.callback_query(F.data == 'showpass')
+async def show_password(callback: CallbackQuery):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f"SELECT * FROM Users WHERE id = {callback.from_user.id}")
+    data = cr.fetchall()
+    if data:
+        await callback.answer('Показать пароль')
+        await callback.message.edit_text(f'Ваш логин: {data[0][1]}\nВаш пароль: {data[0][2]}', reply_markup=hide_pass)
+    else:
+        await callback.answer('Вы не зарегистрированы')
+        await callback.message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
+
+    con.commit()
+    cr.close()
+
+
+@router.callback_query(F.data == 'hidepass')
+async def hide_password(callback: CallbackQuery):
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f"SELECT * FROM Users WHERE id = {callback.from_user.id}")
+    data = cr.fetchall()
+    if data:
+        await callback.answer('Скрыть пароль')
+        await callback.message.edit_text(f'Ваш логин: {data[0][1]}\nВаш пароль: {'*' * len(data[0][2])}', reply_markup=show_pass)
+    else:
+        await callback.answer('Вы не зарегистрированы')
+        await callback.message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
+
+    con.commit()
+    cr.close()
 
 
 @router.message(F.text == 'Удалить аккаунт')
@@ -96,7 +148,7 @@ async def del_acc(message: Message):
         con.close()
         await message.answer('Аккаунт удалён')
     else:
-        await message.answer('Вы не зарегистрированы')
+        await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
 
 
 @router.message(F.text == 'Изменить данные')
@@ -113,9 +165,16 @@ async def edit_acc(message: Message):
 
 @router.callback_query(F.data == 'editlogin')
 async def change_login(callback: CallbackQuery, state: FSMContext):
-    await callback.answer('Вы выбрали изменить логин ✅')
-    await callback.message.answer('Введите новый логин:')
-    await state.set_state(EditInfo.editing_login)
+    con = sqlite3.connect('data.db')
+    cr = con.cursor()
+
+    cr.execute(f"SELECT login FROM Users WHERE id = {callback.from_user.id}")
+    if cr.fetchall():
+        await callback.answer('Вы выбрали изменить логин ✅')
+        await callback.message.answer('Введите новый логин:')
+        await state.set_state(EditInfo.editing_login)
+    else:
+        await callback.message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
 
 
 @router.callback_query(F.data == 'editpassword')
@@ -130,17 +189,19 @@ async def edit_login(message: Message, state: FSMContext):
     cr = con.cursor()
 
     cr.execute(f"SELECT login FROM Users WHERE id = {message.from_user.id}")
-
-    if cr.fetchall()[0][0] == message.text:
+    data = cr.fetchall()
+    if not data:
+        await message.answer('Вы ещё не зарегистрированы в БД', reply_markup=not_in_db)
+    elif data[0][0] == message.text:
         await message.answer('Вы ввели свой же логин, пожалуйста введите другой')
     else:
         cr.execute(f"SELECT * FROM Users WHERE login = '{message.text}'")
         if cr.fetchall():
-            await message.answer('Такой пользователь уже существует. Пожалуйста, введите другой логин:')
+            await message.answer('Такой пользователь уже существует. Пожалуйста, введите другой логин:', reply_markup=in_db)
         else:
             cr.execute(f"UPDATE Users SET login = '{message.text}' WHERE id = {int(message.from_user.id)}")
             await state.clear()
-            await message.answer(f'Логин изменён ✅\nНовый логин: {message.text}')
+            await message.answer(f'Логин изменён ✅\nНовый логин: {message.text}', reply_markup=in_db)
 
     con.commit()
     con.close()
@@ -166,4 +227,4 @@ async def list_of_users(message: Message):
 
 @router.message()
 async def ya_blat_ne_ponimau(message: Message):
-    await message.answer('Извини, я тебя не понимаю')
+    await start_message(message)
